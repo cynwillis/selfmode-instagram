@@ -112,15 +112,42 @@ const HTML = `<!DOCTYPE html>
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 20px 24px 0;
+    padding: 28px 24px 0;
+    position: relative;
+    overflow: hidden;
   }
-  .brand {
-    font-family: 'Satoshi', sans-serif;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--muted);
-    letter-spacing: 0.04em;
+  header::before {
+    content: '';
+    position: absolute;
+    top: -80px; left: -40px;
+    width: 400px; height: 300px;
+    background: radial-gradient(ellipse, rgba(13,148,136,0.06), transparent 70%);
+    pointer-events: none;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; position: relative; }
+  .logo-mark {
+    width: 28px; height: 28px;
+    border: 2px solid var(--teal);
+    border-radius: 7px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .logo-toggle { width: 10px; height: 6px; background: var(--teal); border-radius: 3px; }
+  .logo-text {
+    font-family: 'Instrument Serif', serif;
+    font-size: 20px;
+    color: var(--text);
+    letter-spacing: -0.3px;
+  }
+  .research-badge {
+    font-family: 'Geist Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 2.5px;
     text-transform: uppercase;
+    color: var(--teal);
+    padding: 4px 10px;
+    border: 1px solid rgba(13,148,136,0.2);
+    border-radius: 3px;
+    margin-left: 4px;
   }
   .ig-badge {
     width: 32px;
@@ -546,7 +573,11 @@ const HTML = `<!DOCTYPE html>
 <div class="app">
 
   <header>
-    <span class="brand">SelfMode Research</span>
+    <div class="brand">
+      <div class="logo-mark"><div class="logo-toggle"></div></div>
+      <span class="logo-text">SelfMode</span>
+      <span class="research-badge">Research</span>
+    </div>
     <div class="ig-badge">
       <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
         <rect x="2" y="2" width="20" height="20" rx="6" stroke="white" stroke-width="1.8"/>
