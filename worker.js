@@ -39,25 +39,57 @@ const MANIFEST = JSON.stringify({
   orientation: 'portrait-primary',
   icons: [
     { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }
-  ]
+  ],
+  share_target: {
+    action: '/share',
+    method: 'POST',
+    enctype: 'multipart/form-data',
+    params: {
+      title: 'title',
+      text: 'text',
+      url: 'url',
+      files: [{ name: 'video', accept: ['video/*', 'video/mp4', 'video/quicktime'] }]
+    }
+  }
 });
 
 // ─── Service Worker ──────────────────────────────────────────────────────────
 const SW_JS = `
-const CACHE = 'selfmode-ig-v1';
+const CACHE = 'selfmode-ig-v2';
 const PRECACHE = ['/', '/manifest.json', '/icon.svg'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(PRECACHE)).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
-  e.waitUntil(clients.claim());
+  e.waitUntil(caches.claim());
 });
 self.addEventListener('fetch', e => {
-  if (e.request.url.includes('/transcribe')) return;
-  e.respondWith(
-    fetch(e.request).catch(() => caches.match(e.request))
-  );
+  const url = new URL(e.request.url);
+
+  // Handle share target POST — store file in cache, redirect to app
+  if (url.pathname === '/share' && e.request.method === 'POST') {
+    e.respondWith((async () => {
+      const data = await e.request.formData();
+      const file = data.get('video');
+      const sharedUrl = data.get('url') || '';
+      if (file && file.size > 0) {
+        const cache = await caches.open('share-pending');
+        await cache.put('/pending-video', new Response(file, {
+          headers: { 'Content-Type': file.type || 'video/mp4', 'X-Filename': file.name || 'shared.mp4' }
+        }));
+        return Response.redirect('/?from=share&type=file', 303);
+      }
+      if (sharedUrl) {
+        return Response.redirect('/?from=share&url=' + encodeURIComponent(sharedUrl), 303);
+      }
+      return Response.redirect('/', 303);
+    })());
+    return;
+  }
+
+  if (url.pathname.includes('/transcribe') || url.pathname.includes('/get-url')) return;
+  e.respondWith(fetch(e.request).catch(() => caches.match(e.request)));
 });
 `;
 
@@ -530,6 +562,56 @@ const HTML = `<!DOCTYPE html>
     line-height: 1;
     -webkit-tap-highlight-color: transparent;
   }
+  .history-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .btn-sm {
+    flex: 1;
+    padding: 8px 10px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: 'Satoshi', sans-serif;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn-sm.teal { background: var(--teal-dim); border-color: var(--teal); color: var(--teal); }
+  .btn-sm:active { opacity: 0.7; }
+  .transcript-inline {
+    margin-top: 10px;
+    padding: 12px;
+    background: rgba(255,255,255,0.03);
+    border-radius: 8px;
+    font-family: 'Geist Mono', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text);
+    max-height: 160px;
+    overflow-y: auto;
+    display: none;
+  }
+  .upload-zone {
+    border: 2px dashed var(--border);
+    border-radius: 14px;
+    padding: 28px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s;
+    margin-bottom: 16px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .upload-zone:active, .upload-zone.drag { border-color: var(--teal); }
+  .upload-icon { font-size: 28px; margin-bottom: 8px; }
+  .upload-label { font-size: 14px; color: var(--muted); line-height: 1.5; }
+  .upload-label strong { color: var(--text); }
+  #file-input { display: none; }
 
   /* ── Footer ── */
   footer {
@@ -604,7 +686,7 @@ const HTML = `<!DOCTYPE html>
   <div class="panel active" id="panel-transcribe">
 
     <div class="input-card">
-      <span class="input-label">Instagram URL</span>
+      <span class="input-label">Instagram URL → Library</span>
       <div class="url-row">
         <input
           type="url"
@@ -616,19 +698,21 @@ const HTML = `<!DOCTYPE html>
           autocorrect="off"
           spellcheck="false"
         >
-        <button class="btn-transcribe" id="btn-go" onclick="startTranscribe()">Go</button>
+        <button class="btn-transcribe" id="btn-go" onclick="startFetch()">Save</button>
       </div>
-      <div class="format-row">
-        <span class="format-label">Format for AI</span>
-        <button class="toggle" id="format-toggle" onclick="this.classList.toggle('on')" aria-label="Format for AI"></button>
-      </div>
+    </div>
+
+    <div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-input').click()">
+      <input type="file" id="file-input" accept="video/*" onchange="handleFileUpload(this.files[0])">
+      <div class="upload-icon">📁</div>
+      <div class="upload-label"><strong>Upload a video</strong><br>From camera roll or Files app</div>
     </div>
 
     <div class="status" id="status">
       <div class="status-steps">
         <div class="step" id="step-1">Fetching</div>
         <div class="step" id="step-2">Downloading</div>
-        <div class="step" id="step-3">Transcribing</div>
+        <div class="step" id="step-3">Saving</div>
       </div>
       <div class="status-text">
         <div class="spinner"></div>
@@ -638,29 +722,9 @@ const HTML = `<!DOCTYPE html>
 
     <div class="error-card" id="error-card"></div>
 
-    <div class="result" id="result">
-      <div class="result-meta">
-        <div class="result-avatar" id="result-avatar">?</div>
-        <div class="result-info">
-          <div class="result-username" id="result-username">@username</div>
-          <div class="result-caption" id="result-caption"></div>
-        </div>
-        <div class="result-duration" id="result-duration">0s</div>
-      </div>
-      <div class="result-transcript">
-        <div class="transcript-label">Transcript</div>
-        <div class="transcript-text" id="transcript-text"></div>
-      </div>
-      <div class="result-actions">
-        <button class="btn-action teal" onclick="copyTranscript()">Copy</button>
-        <button class="btn-action" onclick="saveTranscript()">Save .txt</button>
-        <button class="btn-action" onclick="saveToHistory()">Save to History</button>
-      </div>
-    </div>
-
   </div>
 
-  <!-- History Panel -->
+  <!-- Library Panel -->
   <div class="panel" id="panel-history">
     <div id="history-list"></div>
   </div>
@@ -671,48 +735,94 @@ const HTML = `<!DOCTYPE html>
 <div class="toast" id="toast"></div>
 
 <script>
-// ── State ───────────────────────────────────────────────────────────────────
-let currentResult = null;
+// ── DB ────────────────────────────────────────────────────────────────────────
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('SelfModeIG', 2);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('videos')) {
+        const s = db.createObjectStore('videos', { keyPath: 'id', autoIncrement: true });
+        s.createIndex('savedAt', 'savedAt');
+      }
+    };
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror = () => reject(req.error);
+  });
+}
 
-// ── Tabs ─────────────────────────────────────────────────────────────────────
+async function saveVideo(entry) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('videos', 'readwrite');
+    const req = tx.objectStore('videos').add(entry);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function updateVideo(id, patch) {
+  const db = await openDB();
+  const tx = db.transaction('videos', 'readwrite');
+  const store = tx.objectStore('videos');
+  const item = await new Promise(r => { const req = store.get(id); req.onsuccess = () => r(req.result); });
+  if (item) store.put({ ...item, ...patch });
+}
+
+async function getAllVideos() {
+  const db = await openDB();
+  return new Promise(resolve => {
+    const tx = db.transaction('videos', 'readonly');
+    const req = tx.objectStore('videos').index('savedAt').getAll();
+    req.onsuccess = () => resolve((req.result || []).reverse());
+  });
+}
+
+async function deleteVideo(id) {
+  const db = await openDB();
+  const tx = db.transaction('videos', 'readwrite');
+  tx.objectStore('videos').delete(id);
+  tx.oncomplete = () => { renderLibrary(); updateLibraryCount(); };
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────────────────
 function switchTab(name, el) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   el.classList.add('active');
   document.getElementById('panel-' + name).classList.add('active');
-  if (name === 'history') renderHistory();
+  if (name === 'history') renderLibrary();
 }
 
-// ── Transcribe ───────────────────────────────────────────────────────────────
-async function startTranscribe() {
+// ── URL → Library ─────────────────────────────────────────────────────────────
+async function startFetch() {
   const url = document.getElementById('url-input').value.trim();
   if (!url) return;
-
   const btn = document.getElementById('btn-go');
   btn.disabled = true;
-
-  // Reset UI
-  hide('result'); hide('error-card');
-  setStep(1); setStatusText('Fetching post data...');
-  show('status');
+  hide('error-card');
+  setStep(1); setStatusText('Fetching post metadata...'); show('status');
 
   try {
+    const resp = await fetch('/get-url', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error);
+
     setStep(2); setStatusText('Downloading video...');
 
-    const resp = await fetch('/transcribe', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url })
-    });
+    // Browser fetches from CDN with its own IP
+    const videoResp = await fetch(data.audioUrl || data.videoUrl);
+    if (!videoResp.ok) throw new Error('CDN fetch failed (' + videoResp.status + '). Try uploading the video directly instead.');
+    const blob = await videoResp.blob();
 
-    setStep(3); setStatusText('Transcribing with Whisper...');
+    setStep(3); setStatusText('Saving to library...');
+    await saveVideo({ metadata: data.metadata, videoBlob: blob, transcript: null, savedAt: new Date().toISOString() });
 
-    const data = await resp.json();
-    if (!data.ok) throw new Error(data.error || 'Transcription failed');
-
-    currentResult = { ...data, url, savedAt: new Date().toISOString() };
-    renderResult(data);
     hide('status');
+    document.getElementById('url-input').value = '';
+    updateLibraryCount();
+    toast('Saved to library — tap Transcribe to process');
+    switchTab('history', document.querySelectorAll('.tab')[1]);
 
   } catch (e) {
     hide('status');
@@ -722,133 +832,106 @@ async function startTranscribe() {
   }
 }
 
-function renderResult(data) {
-  const m = data.metadata;
-  const formatted = document.getElementById('format-toggle').classList.contains('on');
-  const transcriptToShow = formatted ? formatForAI(data) : data.transcript;
-
-  document.getElementById('result-avatar').textContent = (m.username || '?')[0].toUpperCase();
-  document.getElementById('result-username').textContent = '@' + (m.username || 'unknown');
-  document.getElementById('result-caption').textContent = m.caption ? m.caption.slice(0, 80) + (m.caption.length > 80 ? '…' : '') : 'No caption';
-  document.getElementById('result-duration').textContent = m.duration + 's';
-  document.getElementById('transcript-text').textContent = transcriptToShow;
-  show('result');
-}
-
-function formatForAI(data) {
-  const m = data.metadata;
-  const now = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-  return [
-    '[Instagram Video Transcript]',
-    'Source: @' + (m.username || 'unknown') + ' — ' + (m.postUrl || ''),
-    'Duration: ' + m.duration + ' seconds',
-    m.caption ? 'Caption: "' + m.caption + '"' : '',
-    'Date transcribed: ' + now,
-    '',
-    'TRANSCRIPT:',
-    data.transcript
-  ].filter(Boolean).join('\\n');
-}
-
-// ── History (IndexedDB) ───────────────────────────────────────────────────────
-function openDB() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open('SelfModeIG', 1);
-    req.onupgradeneeded = e => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains('transcripts')) {
-        const store = db.createObjectStore('transcripts', { keyPath: 'id', autoIncrement: true });
-        store.createIndex('savedAt', 'savedAt');
-      }
-    };
-    req.onsuccess = e => resolve(e.target.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function saveToHistory() {
-  if (!currentResult) return;
+// ── File upload → Library ─────────────────────────────────────────────────────
+async function handleFileUpload(file) {
+  if (!file) return;
+  hide('error-card');
+  setStep(1); setStatusText('Reading file...'); show('status');
   try {
-    const db = await openDB();
-    const tx = db.transaction('transcripts', 'readwrite');
-    tx.objectStore('transcripts').add(currentResult);
-    tx.oncomplete = () => { updateHistoryCount(); toast('Saved to history'); };
-  } catch (e) { toast('Save failed'); }
+    setStep(3); setStatusText('Saving to library...');
+    await saveVideo({
+      metadata: { username: 'uploaded', caption: file.name, duration: 0, shortcode: null, postUrl: null },
+      videoBlob: file,
+      transcript: null,
+      savedAt: new Date().toISOString()
+    });
+    hide('status');
+    updateLibraryCount();
+    toast('Saved to library — tap Transcribe to process');
+    switchTab('history', document.querySelectorAll('.tab')[1]);
+  } catch (e) {
+    hide('status');
+    showError(e.message);
+  }
 }
 
-async function getHistory() {
+// ── Transcribe from library ───────────────────────────────────────────────────
+async function transcribeItem(id, btn) {
+  btn.disabled = true;
+  btn.textContent = '...';
   const db = await openDB();
-  return new Promise((resolve) => {
-    const tx = db.transaction('transcripts', 'readonly');
-    const req = tx.objectStore('transcripts').index('savedAt').getAll();
-    req.onsuccess = () => resolve((req.result || []).reverse());
-  });
+  const item = await new Promise(r => { const req = db.transaction('videos','readonly').objectStore('videos').get(id); req.onsuccess = () => r(req.result); });
+  if (!item?.videoBlob) { btn.disabled = false; btn.textContent = 'Transcribe'; return; }
+
+  try {
+    const formData = new FormData();
+    formData.append('audio', item.videoBlob, 'audio.mp4');
+    const resp = await fetch('/transcribe-upload', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error);
+
+    await updateVideo(id, { transcript: data.transcript });
+    renderLibrary();
+    toast('Transcribed!');
+  } catch (e) {
+    toast('Error: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = 'Transcribe';
+  }
 }
 
-async function deleteHistory(id) {
-  const db = await openDB();
-  const tx = db.transaction('transcripts', 'readwrite');
-  tx.objectStore('transcripts').delete(id);
-  tx.oncomplete = () => { renderHistory(); updateHistoryCount(); };
-}
-
-async function renderHistory() {
-  const items = await getHistory();
+// ── Render library ────────────────────────────────────────────────────────────
+async function renderLibrary() {
+  const items = await getAllVideos();
   const list = document.getElementById('history-list');
   if (!items.length) {
-    list.innerHTML = '<div class="history-empty"><div class="icon">📋</div>No transcripts saved yet.</div>';
+    list.innerHTML = '<div class="history-empty"><div class="icon">📹</div>No videos saved yet.<br>Paste a URL or upload a video.</div>';
     return;
   }
   list.innerHTML = items.map(item => {
     const m = item.metadata || {};
     const date = new Date(item.savedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    const preview = (item.transcript || '').slice(0, 100) + '...';
-    return \`<div class="history-item" onclick="loadFromHistory(\${item.id})">
+    const hasTranscript = !!item.transcript;
+    return \`<div class="history-item">
       <div class="history-header">
         <span class="history-user">@\${m.username || 'unknown'}</span>
         <span class="history-date">\${date}</span>
-        <button class="history-delete" onclick="event.stopPropagation();deleteHistory(\${item.id})">×</button>
+        <button class="history-delete" onclick="deleteVideo(\${item.id})">×</button>
       </div>
-      <div class="history-preview">\${preview}</div>
+      <div class="history-preview">\${m.caption ? m.caption.slice(0,80) + (m.caption.length > 80 ? '…' : '') : 'No caption'}</div>
+      <div class="history-actions">
+        \${hasTranscript
+          ? \`<button class="btn-sm teal" onclick="showTranscript(\${item.id})">View</button>
+             <button class="btn-sm" onclick="copyText(\${item.id})">Copy</button>
+             <button class="btn-sm" onclick="saveTxt(\${item.id})">Save .txt</button>\`
+          : \`<button class="btn-sm teal" id="tbtn-\${item.id}" onclick="transcribeItem(\${item.id}, this)">Transcribe</button>\`
+        }
+      </div>
+      \${hasTranscript ? \`<div class="transcript-inline" id="tr-\${item.id}">\${item.transcript}</div>\` : ''}
     </div>\`;
   }).join('');
 }
 
-async function loadFromHistory(id) {
+function showTranscript(id) {
+  const el = document.getElementById('tr-' + id);
+  if (el) el.style.display = el.style.display === 'block' ? 'none' : 'block';
+}
+
+async function copyText(id) {
   const db = await openDB();
-  const tx = db.transaction('transcripts', 'readonly');
-  const req = tx.objectStore('transcripts').get(id);
-  req.onsuccess = () => {
-    if (req.result) {
-      currentResult = req.result;
-      document.getElementById('url-input').value = req.result.url || '';
-      renderResult(req.result);
-      switchTab('transcribe', document.querySelector('.tab'));
-    }
-  };
+  const item = await new Promise(r => { const req = db.transaction('videos','readonly').objectStore('videos').get(id); req.onsuccess = () => r(req.result); });
+  if (item?.transcript) navigator.clipboard.writeText(item.transcript).then(() => toast('Copied!')).catch(() => toast('Copy failed'));
 }
 
-async function updateHistoryCount() {
-  const items = await getHistory();
-  const el = document.getElementById('history-count');
-  if (items.length > 0) { el.textContent = items.length; el.style.display = 'flex'; }
-  else { el.style.display = 'none'; }
-}
-
-// ── Actions ───────────────────────────────────────────────────────────────────
-function copyTranscript() {
-  const text = document.getElementById('transcript-text').textContent;
-  navigator.clipboard.writeText(text).then(() => toast('Copied!')).catch(() => toast('Copy failed'));
-}
-
-function saveTranscript() {
-  const text = document.getElementById('transcript-text').textContent;
-  const m = currentResult?.metadata || {};
-  const filename = 'transcript-' + (m.username || 'ig') + '-' + (m.shortcode || Date.now()) + '.txt';
-  const blob = new Blob([text], { type: 'text/plain' });
+async function saveTxt(id) {
+  const db = await openDB();
+  const item = await new Promise(r => { const req = db.transaction('videos','readonly').objectStore('videos').get(id); req.onsuccess = () => r(req.result); });
+  if (!item?.transcript) return;
+  const m = item.metadata || {};
+  const blob = new Blob([item.transcript], { type: 'text/plain' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = filename;
+  a.download = 'transcript-' + (m.username || 'ig') + '-' + (m.shortcode || id) + '.txt';
   a.click();
   URL.revokeObjectURL(a.href);
 }
@@ -856,19 +939,20 @@ function saveTranscript() {
 // ── Utilities ─────────────────────────────────────────────────────────────────
 function show(id) { document.getElementById(id).classList.add('show'); }
 function hide(id) { document.getElementById(id).classList.remove('show'); }
-function showError(msg) {
-  const el = document.getElementById('error-card');
-  el.textContent = msg;
-  el.classList.add('show');
-}
-
+function showError(msg) { const el = document.getElementById('error-card'); el.textContent = msg; el.classList.add('show'); }
 function setStep(n) {
   ['step-1','step-2','step-3'].forEach((id, i) => {
-    const el = document.getElementById(id);
-    el.className = 'step' + (i + 1 < n ? ' done' : i + 1 === n ? ' active' : '');
+    document.getElementById(id).className = 'step' + (i+1 < n ? ' done' : i+1 === n ? ' active' : '');
   });
 }
 function setStatusText(t) { document.getElementById('status-text').textContent = t; }
+
+async function updateLibraryCount() {
+  const items = await getAllVideos();
+  const el = document.getElementById('history-count');
+  if (items.length > 0) { el.textContent = items.length; el.style.display = 'flex'; }
+  else { el.style.display = 'none'; }
+}
 
 let toastTimer;
 function toast(msg) {
@@ -876,19 +960,36 @@ function toast(msg) {
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 2000);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2500);
 }
 
-// ── Paste handling ────────────────────────────────────────────────────────────
-document.getElementById('url-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') startTranscribe();
-});
+// ── Share target pickup ───────────────────────────────────────────────────────
+async function checkSharedContent() {
+  const params = new URLSearchParams(location.search);
+  if (!params.has('from')) return;
+  if (params.get('type') === 'file') {
+    const cache = await caches.open('share-pending');
+    const resp = await cache.match('/pending-video');
+    if (resp) {
+      const blob = await resp.blob();
+      const filename = resp.headers.get('X-Filename') || 'shared.mp4';
+      await cache.delete('/pending-video');
+      await handleFileUpload(new File([blob], filename, { type: blob.type }));
+    }
+  } else if (params.get('url')) {
+    document.getElementById('url-input').value = decodeURIComponent(params.get('url'));
+  }
+  history.replaceState({}, '', '/');
+}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+document.getElementById('url-input').addEventListener('keydown', e => { if (e.key === 'Enter') startFetch(); });
+
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
-updateHistoryCount();
+checkSharedContent();
+updateLibraryCount();
 </script>
 </body>
 </html>`;
@@ -1021,6 +1122,73 @@ async function handleTranscribe(request, env) {
   }
 }
 
+// ─── Get URL only (GraphQL → return CDN URL to browser) ──────────────────────
+async function handleGetUrl(request, env) {
+  let body;
+  try { body = await request.json(); } catch { return errorResponse('Invalid request body'); }
+  const { url } = body;
+  const shortcode = extractShortcode(url);
+  if (!shortcode) return errorResponse('Invalid Instagram URL.');
+
+  try {
+    const pageResp = await fetch(`https://www.instagram.com/p/${shortcode}/`, { headers: igHeaders() });
+    if (!pageResp.ok) return errorResponse(`Could not reach Instagram (${pageResp.status}).`);
+    const setCookies = pageResp.headers.getSetCookie ? pageResp.headers.getSetCookie() : [pageResp.headers.get('set-cookie') || ''];
+    const csrfToken = setCookies.join(' ').match(/csrftoken=([^;,\s]+)/)?.[1] || '';
+
+    const docId = env.IG_STATE ? (await env.IG_STATE.get('ig:doc_id') || DOC_ID_DEFAULT) : DOC_ID_DEFAULT;
+    const gqlResp = await fetch('https://www.instagram.com/graphql/query/', {
+      method: 'POST',
+      headers: { ...igHeaders(), 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': csrfToken, 'X-Requested-With': 'XMLHttpRequest', 'X-IG-App-ID': IG_APP_ID, 'X-ASBD-ID': '129477', 'X-IG-WWW-Claim': '0', 'Referer': `https://www.instagram.com/p/${shortcode}/`, 'Origin': 'https://www.instagram.com' },
+      body: `doc_id=${docId}&variables=${encodeURIComponent(JSON.stringify({ shortcode, child_comment_count: 3, fetch_comment_count: 40, parent_comment_count: 24, has_threaded_comments: true }))}`
+    });
+    if (!gqlResp.ok) return errorResponse(`Instagram returned ${gqlResp.status}.`);
+    const gql = await gqlResp.json();
+    const media = gql?.data?.xdt_shortcode_media;
+    if (!media) return errorResponse('Could not read post data. doc_id may need updating.');
+    if (!media.is_video) return errorResponse('This post is a photo, not a video.');
+
+    let audioUrl = media.video_url;
+    const manifest = media.dash_info?.video_dash_manifest;
+    if (manifest) {
+      const m = manifest.match(/<AdaptationSet[^>]*mimeType="audio[^"]*"[^>]*>[\s\S]*?<BaseURL>\s*([^\s<]+)\s*<\/BaseURL>/i)
+               || manifest.match(/<AdaptationSet[^>]*contentType="audio"[^>]*>[\s\S]*?<BaseURL>\s*([^\s<]+)\s*<\/BaseURL>/i);
+      if (m && m[1]) audioUrl = m[1];
+    }
+
+    return jsonResponse({
+      ok: true,
+      videoUrl: media.video_url,
+      audioUrl,
+      metadata: {
+        username: media.owner?.username || 'unknown',
+        caption: media.edge_media_to_caption?.edges?.[0]?.node?.text || '',
+        duration: Math.round(media.video_duration || 0),
+        shortcode,
+        postUrl: `https://www.instagram.com/p/${shortcode}/`
+      }
+    });
+  } catch (e) {
+    return errorResponse('Unexpected error: ' + e.message, 500);
+  }
+}
+
+// ─── Transcribe uploaded file ─────────────────────────────────────────────────
+async function handleTranscribeUpload(request, env) {
+  if (!env.AI) return errorResponse('AI binding not configured.');
+  try {
+    const formData = await request.formData();
+    const file = formData.get('audio');
+    if (!file) return errorResponse('No audio file received.');
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const aiResult = await env.AI.run('@cf/openai/whisper-large-v3-turbo', { audio: bytes });
+    if (!aiResult?.text) return errorResponse('Transcription returned empty. The video may have no speech.');
+    return jsonResponse({ ok: true, transcript: aiResult.text });
+  } catch (e) {
+    return errorResponse('Transcription error: ' + e.message, 500);
+  }
+}
+
 // ─── Main export ──────────────────────────────────────────────────────────────
 export default {
   async fetch(request, env, ctx) {
@@ -1037,6 +1205,15 @@ export default {
     }
     if (url.pathname === '/transcribe' && request.method === 'POST') {
       return handleTranscribe(request, env);
+    }
+    if (url.pathname === '/get-url' && request.method === 'POST') {
+      return handleGetUrl(request, env);
+    }
+    if (url.pathname === '/transcribe-upload' && request.method === 'POST') {
+      return handleTranscribeUpload(request, env);
+    }
+    if (url.pathname === '/share') {
+      return Response.redirect('/', 303);
     }
 
     return new Response(HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' }});
