@@ -929,14 +929,16 @@ async function handleTranscribe(request, env) {
   if (!shortcode) return errorResponse('Invalid Instagram URL. Paste a /p/, /reel/, or /tv/ link.');
 
   try {
-    // 1. Fetch page for CSRF token
+    // 1. Fetch page for CSRF token + session cookies
     const pageResp = await fetch(`https://www.instagram.com/p/${shortcode}/`, {
       headers: igHeaders()
     });
-    if (!pageResp.ok) return errorResponse('Could not reach Instagram. Try again in a moment.');
+    if (!pageResp.ok) return errorResponse(`Could not reach Instagram (${pageResp.status}). Try again in a moment.`);
 
-    const cookies = pageResp.headers.get('set-cookie') || '';
-    const csrfToken = cookies.match(/csrftoken=([^;,\s]+)/)?.[1] || '';
+    // Collect all cookies to forward to CDN
+    const setCookies = pageResp.headers.getSetCookie ? pageResp.headers.getSetCookie() : [pageResp.headers.get('set-cookie') || ''];
+    const sessionCookie = setCookies.map(c => c.split(';')[0]).filter(Boolean).join('; ');
+    const csrfToken = setCookies.join(' ').match(/csrftoken=([^;,\s]+)/)?.[1] || '';
 
     // 2. GraphQL — get video URL
     const docId = env.IG_STATE ? (await env.IG_STATE.get('ig:doc_id') || DOC_ID_DEFAULT) : DOC_ID_DEFAULT;
@@ -989,11 +991,17 @@ async function handleTranscribe(request, env) {
       if (m && m[1]) audioUrl = m[1];
     }
 
-    // 4. Download audio
+    // 4. Download audio — forward session cookies from page fetch
     const audioResp = await fetch(audioUrl, {
-      headers: { 'Referer': 'https://www.instagram.com/', 'User-Agent': igHeaders()['User-Agent'] }
+      headers: {
+        'Referer': 'https://www.instagram.com/',
+        'User-Agent': igHeaders()['User-Agent'],
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        ...(sessionCookie ? { 'Cookie': sessionCookie } : {}),
+      }
     });
-    if (!audioResp.ok) return errorResponse('Failed to download audio from Instagram CDN.');
+    if (!audioResp.ok) return errorResponse(`CDN fetch failed (${audioResp.status}). The video may be private or the URL expired.`);
 
     const audioBytes = new Uint8Array(await audioResp.arrayBuffer());
 
