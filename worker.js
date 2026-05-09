@@ -2,7 +2,8 @@
 // selfmode-instagram.spectrumkore96.workers.dev
 
 const IG_APP_ID = '936619743392459';
-const DOC_ID_DEFAULT = '8845758582119845';
+const DOC_ID_DEFAULT = '10015901848480474';
+const LSD_TOKEN = 'AVqbxe3J_YA';
 
 // ─── Icon: SelfMode × Instagram blend ───────────────────────────────────────
 const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
@@ -1044,7 +1045,7 @@ async function handleTranscribe(request, env) {
     // 2. GraphQL — get video URL
     const docId = env.IG_STATE ? (await env.IG_STATE.get('ig:doc_id') || DOC_ID_DEFAULT) : DOC_ID_DEFAULT;
 
-    const gqlResp = await fetch('https://www.instagram.com/graphql/query/', {
+    const gqlResp = await fetch('https://www.instagram.com/api/graphql', {
       method: 'POST',
       headers: {
         ...igHeaders(),
@@ -1054,10 +1055,11 @@ async function handleTranscribe(request, env) {
         'X-IG-App-ID': IG_APP_ID,
         'X-ASBD-ID': '129477',
         'X-IG-WWW-Claim': '0',
+        'X-FB-LSD': LSD_TOKEN,
         'Referer': `https://www.instagram.com/p/${shortcode}/`,
         'Origin': 'https://www.instagram.com',
       },
-      body: `doc_id=${docId}&variables=${encodeURIComponent(JSON.stringify({
+      body: `lsd=${LSD_TOKEN}&doc_id=${docId}&variables=${encodeURIComponent(JSON.stringify({
         shortcode,
         child_comment_count: 3,
         fetch_comment_count: 40,
@@ -1137,10 +1139,10 @@ async function handleGetUrl(request, env) {
     const csrfToken = setCookies.join(' ').match(/csrftoken=([^;,\s]+)/)?.[1] || '';
 
     const docId = env.IG_STATE ? (await env.IG_STATE.get('ig:doc_id') || DOC_ID_DEFAULT) : DOC_ID_DEFAULT;
-    const gqlResp = await fetch('https://www.instagram.com/graphql/query/', {
+    const gqlResp = await fetch('https://www.instagram.com/api/graphql', {
       method: 'POST',
-      headers: { ...igHeaders(), 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': csrfToken, 'X-Requested-With': 'XMLHttpRequest', 'X-IG-App-ID': IG_APP_ID, 'X-ASBD-ID': '129477', 'X-IG-WWW-Claim': '0', 'Referer': `https://www.instagram.com/p/${shortcode}/`, 'Origin': 'https://www.instagram.com' },
-      body: `doc_id=${docId}&variables=${encodeURIComponent(JSON.stringify({ shortcode, child_comment_count: 3, fetch_comment_count: 40, parent_comment_count: 24, has_threaded_comments: true }))}`
+      headers: { ...igHeaders(), 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': csrfToken, 'X-Requested-With': 'XMLHttpRequest', 'X-IG-App-ID': IG_APP_ID, 'X-ASBD-ID': '129477', 'X-IG-WWW-Claim': '0', 'X-FB-LSD': LSD_TOKEN, 'Referer': `https://www.instagram.com/p/${shortcode}/`, 'Origin': 'https://www.instagram.com' },
+      body: `lsd=${LSD_TOKEN}&doc_id=${docId}&variables=${encodeURIComponent(JSON.stringify({ shortcode, child_comment_count: 3, fetch_comment_count: 40, parent_comment_count: 24, has_threaded_comments: true }))}`
     });
     if (!gqlResp.ok) return errorResponse(`Instagram returned ${gqlResp.status}.`);
     const gql = await gqlResp.json();
