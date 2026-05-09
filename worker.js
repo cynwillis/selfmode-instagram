@@ -980,19 +980,28 @@ async function handleTranscribe(request, env) {
       postUrl: `https://www.instagram.com/p/${shortcode}/`
     };
 
-    // 3. Download video
-    const videoResp = await fetch(videoUrl, {
+    // 3. Get audio-only URL from DASH manifest if available (smaller, pure audio)
+    let audioUrl = videoUrl;
+    const manifest = media.dash_info?.video_dash_manifest;
+    if (manifest) {
+      const m = manifest.match(/<AdaptationSet[^>]*mimeType="audio[^"]*"[^>]*>[\s\S]*?<BaseURL>\s*([^\s<]+)\s*<\/BaseURL>/i)
+               || manifest.match(/<AdaptationSet[^>]*contentType="audio"[^>]*>[\s\S]*?<BaseURL>\s*([^\s<]+)\s*<\/BaseURL>/i);
+      if (m && m[1]) audioUrl = m[1];
+    }
+
+    // 4. Download audio
+    const audioResp = await fetch(audioUrl, {
       headers: { 'Referer': 'https://www.instagram.com/', 'User-Agent': igHeaders()['User-Agent'] }
     });
-    if (!videoResp.ok) return errorResponse('Failed to download video from Instagram CDN.');
+    if (!audioResp.ok) return errorResponse('Failed to download audio from Instagram CDN.');
 
-    const videoBytes = new Uint8Array(await videoResp.arrayBuffer());
+    const audioBytes = new Uint8Array(await audioResp.arrayBuffer());
 
-    // 4. Transcribe with Whisper Large V3 Turbo
+    // 5. Transcribe with Whisper Large V3 Turbo — pass Uint8Array directly, not spread
     if (!env.AI) return errorResponse('AI binding not configured on this worker.');
 
     const aiResult = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
-      audio: [...videoBytes]
+      audio: audioBytes
     });
 
     if (!aiResult?.text) return errorResponse('Transcription returned empty. The video may have no speech.');
