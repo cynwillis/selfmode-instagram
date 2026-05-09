@@ -588,7 +588,7 @@ const HTML = `<!DOCTYPE html>
   </header>
 
   <div class="hero">
-    <h1>Transcribe any<br><em>Reel</em></h1>
+    <h1>Transcribe any <em>Reel</em></h1>
     <p>Paste a link. Get clean text. Ready for AI.</p>
   </div>
 
