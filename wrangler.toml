@@ -1,0 +1,12 @@
+name = "selfmode-instagram"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+[ai]
+binding = "AI"
+
+# Optional: KV for doc_id rotation management
+# Uncomment and set id when ready to use KV-based doc_id updates
+# [[kv_namespaces]]
+# binding = "IG_STATE"
+# id = "baf0281fd4284d5c8f88db74ab7e52c1"
