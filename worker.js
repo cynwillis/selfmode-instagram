@@ -1124,7 +1124,40 @@ async function handleTranscribe(request, env) {
   }
 }
 
-// ─── Get URL only (GraphQL → return CDN URL to browser) ──────────────────────
+// ─── Extract media from page HTML (no GraphQL, no doc_id) ────────────────────
+function extractMediaFromHtml(html) {
+  // Instagram embeds post data in <script type="application/json"> blocks
+  const scriptMatches = [...html.matchAll(/<script type="application\/json"[^>]*>([\s\S]*?)<\/script>/gi)];
+  for (const match of scriptMatches) {
+    try {
+      const data = JSON.parse(match[1]);
+      const str = JSON.stringify(data);
+      if (!str.includes('video_url')) continue;
+      // Walk the parsed object looking for video_url
+      const media = findVideoMedia(data);
+      if (media) return media;
+    } catch { continue; }
+  }
+  return null;
+}
+
+function findVideoMedia(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  if (obj.video_url && typeof obj.video_url === 'string') return obj;
+  for (const val of Object.values(obj)) {
+    const found = findVideoMedia(Array.isArray(val) ? { _: val } : val);
+    if (found) return found;
+  }
+  if (Array.isArray(obj._)) {
+    for (const item of obj._) {
+      const found = findVideoMedia(item);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+// ─── Get URL only (page HTML → return CDN URL to browser) ────────────────────
 async function handleGetUrl(request, env) {
   let body;
   try { body = await request.json(); } catch { return errorResponse('Invalid request body'); }
@@ -1135,20 +1168,16 @@ async function handleGetUrl(request, env) {
   try {
     const pageResp = await fetch(`https://www.instagram.com/p/${shortcode}/`, { headers: igHeaders() });
     if (!pageResp.ok) return errorResponse(`Could not reach Instagram (${pageResp.status}).`);
-    const setCookies = pageResp.headers.getSetCookie ? pageResp.headers.getSetCookie() : [pageResp.headers.get('set-cookie') || ''];
-    const csrfToken = setCookies.join(' ').match(/csrftoken=([^;,\s]+)/)?.[1] || '';
+    const html = await pageResp.text();
 
-    const docId = env.IG_STATE ? (await env.IG_STATE.get('ig:doc_id') || DOC_ID_DEFAULT) : DOC_ID_DEFAULT;
-    const gqlResp = await fetch('https://www.instagram.com/api/graphql', {
-      method: 'POST',
-      headers: { ...igHeaders(), 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': csrfToken, 'X-Requested-With': 'XMLHttpRequest', 'X-IG-App-ID': IG_APP_ID, 'X-ASBD-ID': '129477', 'X-IG-WWW-Claim': '0', 'X-FB-LSD': LSD_TOKEN, 'Referer': `https://www.instagram.com/p/${shortcode}/`, 'Origin': 'https://www.instagram.com' },
-      body: `lsd=${LSD_TOKEN}&doc_id=${docId}&variables=${encodeURIComponent(JSON.stringify({ shortcode, child_comment_count: 3, fetch_comment_count: 40, parent_comment_count: 24, has_threaded_comments: true }))}`
-    });
-    if (!gqlResp.ok) return errorResponse(`Instagram returned ${gqlResp.status}.`);
-    const gql = await gqlResp.json();
-    const media = gql?.data?.xdt_shortcode_media;
-    if (!media) return errorResponse('Could not read post data. doc_id may need updating.');
-    if (!media.is_video) return errorResponse('This post is a photo, not a video.');
+    // Check if we got a login wall instead of the actual page
+    if (html.includes('login') && !html.includes('video_url')) {
+      return errorResponse('Instagram returned a login page — the post may be private or Cloudflare IP was blocked.');
+    }
+
+    const media = extractMediaFromHtml(html);
+    if (!media) return errorResponse('Could not find video data in page. The post may be private or the page structure changed.');
+    if (!media.video_url) return errorResponse('This post does not appear to be a video.');
 
     let audioUrl = media.video_url;
     const manifest = media.dash_info?.video_dash_manifest;
@@ -1163,8 +1192,8 @@ async function handleGetUrl(request, env) {
       videoUrl: media.video_url,
       audioUrl,
       metadata: {
-        username: media.owner?.username || 'unknown',
-        caption: media.edge_media_to_caption?.edges?.[0]?.node?.text || '',
+        username: media.owner?.username || media.user?.username || 'unknown',
+        caption: media.edge_media_to_caption?.edges?.[0]?.node?.text || media.caption?.text || '',
         duration: Math.round(media.video_duration || 0),
         shortcode,
         postUrl: `https://www.instagram.com/p/${shortcode}/`
